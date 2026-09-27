@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   StyleSheet,
   Text,
@@ -9,6 +9,8 @@ import {
   StatusBar,
   Dimensions,
 } from "react-native";
+import { useTVConnection } from "./context/TVConnectionContext";
+import { AndroidKeycodes } from "./constants/androidKeycodes";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 
@@ -100,30 +102,38 @@ function PulseButton({
   );
 }
 
-function StatusDot({ powered }) {
+function StatusDot({ powered, connectionState }) {
   const pulse = useRef(new Animated.Value(1)).current;
-  React.useEffect(() => {
-    if (!powered) {
-      pulse.setValue(0);
+
+  const isConnected = connectionState === 'connected';
+  const isReconnecting = connectionState === 'reconnecting';
+
+  const dotColor = !isConnected
+    ? (isReconnecting ? C.warning : C.danger)
+    : (powered ? C.accent : C.danger);
+
+  useEffect(() => {
+    if (!powered && isConnected) {
+      pulse.setValue(1);
       return;
     }
     const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, {
-          toValue: 0.4,
-          duration: 1500,
+          toValue: 0.3,
+          duration: isReconnecting ? 600 : 1500,
           useNativeDriver: true,
         }),
         Animated.timing(pulse, {
           toValue: 1,
-          duration: 1500,
+          duration: isReconnecting ? 600 : 1500,
           useNativeDriver: true,
         }),
       ]),
     );
     loop.start();
     return () => loop.stop();
-  }, [powered]);
+  }, [powered, connectionState, isReconnecting, isConnected]);
 
   return (
     <Animated.View
@@ -131,7 +141,7 @@ function StatusDot({ powered }) {
         width: 6,
         height: 6,
         borderRadius: 3,
-        backgroundColor: powered ? C.accent : C.danger,
+        backgroundColor: dotColor,
         opacity: pulse,
         marginRight: 6,
       }}
@@ -141,7 +151,7 @@ function StatusDot({ powered }) {
 
 function Toast({ message, visible }) {
   const opacity = useRef(new Animated.Value(0)).current;
-  React.useEffect(() => {
+  useEffect(() => {
     if (visible) {
       Animated.sequence([
         Animated.timing(opacity, {
@@ -167,53 +177,101 @@ function Toast({ message, visible }) {
 }
 
 export default function INTER() {
-  const [powered, setPowered] = useState(true);
+  const {
+    connectionState,
+    volume,
+    powered,
+    sendCommand,
+    setVolume,
+    setPowered,
+    activeTv,
+  } = useTVConnection();
+
   const [toastKey, setToastKey] = useState(0);
   const [toastMsg, setToastMsg] = useState("");
-  const [volume, setVolume] = useState(25);
-  const [channel, setChannel] = useState(8);
 
   const showToast = (msg) => {
     setToastMsg(msg);
     setToastKey((k) => k + 1);
   };
 
+  const handlePressCommand = (keycode, label, vibrationDuration = 15) => {
+    if (connectionState !== "connected") {
+      showToast(connectionState === "reconnecting" ? "Reconnecting to TV..." : "TV Disconnected");
+      return;
+    }
+
+    Vibration?.vibrate(vibrationDuration);
+    const sent = sendCommand(keycode);
+    if (sent && label) {
+      showToast(label);
+    }
+  };
+
   const handlePower = () => {
-    setPowered((p) => !p);
     Vibration?.vibrate(40);
+    if (connectionState === "connected") {
+      sendCommand(AndroidKeycodes.POWER);
+      setPowered(!powered);
+      showToast("POWER");
+    } else {
+      showToast("Not Connected");
+    }
   };
 
   const handleVol = (dir) => {
-    if (!powered) return;
+    if (connectionState !== "connected") {
+      showToast("Not Connected");
+      return;
+    }
     Vibration?.vibrate(15);
+    const keycode = dir > 0 ? AndroidKeycodes.VOLUME_UP : AndroidKeycodes.VOLUME_DOWN;
+    sendCommand(keycode);
+    // Optimistic fallback update
     setVolume((v) => Math.max(0, Math.min(100, v + dir)));
   };
 
-  const handleCh = (dir) => {
-    if (!powered) return;
-    Vibration?.vibrate(15);
-    setChannel((c) => Math.max(1, Math.min(999, c + dir)));
+  const handleNav = (dir) => {
+    const keyMap = {
+      UP: AndroidKeycodes.DPAD_UP,
+      DOWN: AndroidKeycodes.DPAD_DOWN,
+      LEFT: AndroidKeycodes.DPAD_LEFT,
+      RIGHT: AndroidKeycodes.DPAD_RIGHT,
+    };
+    handlePressCommand(keyMap[dir], dir);
   };
 
   const handleOk = () => {
-    if (!powered) return;
-    Vibration?.vibrate(25);
-    showToast("OK Confirmed");
+    handlePressCommand(AndroidKeycodes.DPAD_CENTER, "OK Confirmed", 25);
   };
 
-  const handleNav = (dir) => {
-    if (!powered) return;
-    Vibration?.vibrate(15);
-    showToast(dir);
+  const handleHome = () => {
+    handlePressCommand(AndroidKeycodes.HOME, "HOME");
   };
 
-  const handleTopBtn = (label) => {
-    if (!powered && label !== "POWER") return;
-    Vibration?.vibrate(15);
-    showToast(label);
+  const handleMute = () => {
+    handlePressCommand(AndroidKeycodes.VOLUME_MUTE, "MUTE");
   };
 
-  const dimmed = !powered;
+  const handleBack = () => {
+    handlePressCommand(AndroidKeycodes.BACK, "BACK");
+  };
+
+  const handleInfo = () => {
+    handlePressCommand(AndroidKeycodes.INFO, "INFO");
+  };
+
+  const dimmed = connectionState !== "connected" || !powered;
+
+  const renderStatusLabel = () => {
+    if (connectionState === "connected") {
+      return powered ? "CONNECTED" : "OFF";
+    }
+    if (connectionState === "reconnecting") {
+      return "RECONNECTING...";
+    }
+    return "DISCONNECTED";
+  };
 
   return (
     <View style={styles.container}>
@@ -228,12 +286,10 @@ export default function INTER() {
       <View style={[styles.remote, dimmed && styles.remoteDim]}>
         {/* ── Header ── */}
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>REMOTE</Text>
+          <Text style={styles.headerTitle}>{activeTv?.name?.toUpperCase() || "REMOTE"}</Text>
           <View style={styles.statusRow}>
-            <StatusDot powered={powered} />
-            <Text style={styles.statusText}>
-              {powered ? "CONNECTED" : "OFF"}
-            </Text>
+            <StatusDot powered={powered} connectionState={connectionState} />
+            <Text style={styles.statusText}>{renderStatusLabel()}</Text>
           </View>
         </View>
 
@@ -254,7 +310,7 @@ export default function INTER() {
 
           {/* Home */}
           <PulseButton
-            onPress={() => handleTopBtn("HOME")}
+            onPress={handleHome}
             style={styles.topBtn}
           >
             <View style={styles.homeIcon}>
@@ -340,12 +396,10 @@ export default function INTER() {
           </View>
         </View>
 
-      
-
-        {/* ── Bottom Row: Vol + Ch ── */}
+        {/* ── Bottom Row: Vol ── */}
         <View style={styles.bottomRow}>
           <View style={styles.bottomGroup}>
-            <Text style={styles.groupLabel}>VOL</Text>
+            <Text style={styles.groupLabel}>VOL ({volume})</Text>
             <View style={styles.groupBtns}>
               <PulseButton onPress={() => handleVol(1)} style={styles.volChBtn}>
                 <Text style={styles.volChText}>+</Text>
@@ -363,21 +417,21 @@ export default function INTER() {
 
         <View style={styles.extraRow}>
           <PulseButton
-            onPress={() => handleTopBtn("MUTE")}
+            onPress={handleMute}
             style={styles.extraBtn}
           >
             <Text style={styles.extraIcon}>🔇</Text>
             <Text style={styles.extraLabel}>Mute</Text>
           </PulseButton>
           <PulseButton
-            onPress={() => handleTopBtn("BACK")}
+            onPress={handleBack}
             style={styles.extraBtn}
           >
             <Text style={styles.extraIcon}>↩</Text>
             <Text style={styles.extraLabel}>Back</Text>
           </PulseButton>
           <PulseButton
-            onPress={() => handleTopBtn("INFO")}
+            onPress={handleInfo}
             style={styles.extraBtn}
           >
             <Text style={styles.extraIcon}>ⓘ</Text>
@@ -409,7 +463,6 @@ const styles = StyleSheet.create({
     opacity: 0.06,
     top: -60,
     left: -80,
-    filter: "blur(60px)",
   },
   bgBlob2: {
     position: "absolute",
@@ -422,7 +475,6 @@ const styles = StyleSheet.create({
     right: -60,
   },
 
-  // Toast
   toastWrap: {
     position: "absolute",
     top: 60,
@@ -442,7 +494,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
 
-  // Remote body
   remote: {
     width: SCREEN_WIDTH - 32,
     maxWidth: 360,
@@ -456,19 +507,19 @@ const styles = StyleSheet.create({
     gap: 18,
   },
   remoteDim: {
-    opacity: 0.45,
+    opacity: 0.65,
   },
 
-  // Header
   header: {
     alignItems: "center",
   },
   headerTitle: {
     fontFamily: "monospace",
     fontWeight: "900",
-    fontSize: 20,
-    letterSpacing: 6,
+    fontSize: 18,
+    letterSpacing: 4,
     color: C.accent,
+    textAlign: "center",
   },
   statusRow: {
     flexDirection: "row",
@@ -520,7 +571,6 @@ const styles = StyleSheet.create({
     marginTop: -4,
   },
 
-  // Home icon
   homeIcon: {
     alignItems: "center",
   },
@@ -541,18 +591,6 @@ const styles = StyleSheet.create({
     borderRadius: 1,
   },
 
-  // Menu icon
-  menuIcon: {
-    alignItems: "center",
-    gap: 3,
-  },
-  menuLine: {
-    height: 2,
-    borderRadius: 1,
-    backgroundColor: C.accent,
-  },
-
-  // D-Pad
   dpadContainer: {
     alignItems: "center",
     justifyContent: "center",
@@ -586,7 +624,6 @@ const styles = StyleSheet.create({
     left: 20,
   },
 
-  // D-Pad arrow button
   dpadArrowBtn: {
     width: 48,
     height: 48,
@@ -602,7 +639,6 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  // Positioning for D-Pad
   dpadUpPos: {
     position: "absolute",
     top: 0,
@@ -626,7 +662,6 @@ const styles = StyleSheet.create({
     top: (D_PAD_SIZE - 48) / 2,
   },
 
-  // OK button
   dpadCenter: {
     position: "absolute",
     alignSelf: "center",
@@ -653,64 +688,10 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
 
-  infoStrip: {
-    flexDirection: "row",
-    width: "100%",
-    backgroundColor: C.cardLight,
-    borderRadius: 14,
-    padding: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  infoItem: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  infoLabel: {
-    fontSize: 10,
-    fontWeight: "700",
-    color: C.muted,
-    letterSpacing: 2,
-  },
-  infoBarTrack: {
-    flex: 1,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.06)",
-    overflow: "hidden",
-  },
-  infoBarFill: {
-    height: "100%",
-    borderRadius: 2,
-  },
-  infoValue: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: C.fg,
-    width: 26,
-    textAlign: "right",
-  },
-  infoChValue: {
-    fontSize: 14,
-    fontWeight: "900",
-    color: C.fg,
-    fontFamily: "monospace",
-  },
-  infoDivider: {
-    width: 1,
-    height: 20,
-    backgroundColor: C.border,
-    marginHorizontal: 10,
-  },
-
-  // Bottom row: Vol & Ch
   bottomRow: {
     flexDirection: "row",
     width: "100%",
-    justifyContent: "space-between",
+    justifyContent: "center",
   },
   bottomGroup: {
     flex: 1,
@@ -727,7 +708,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     backgroundColor: C.cardLight,
     borderRadius: 16,
-    borderWidth: 5,
+    borderWidth: 1,
     borderColor: C.border,
     overflow: "hidden",
   },
@@ -743,11 +724,6 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: "700",
     color: C.fg,
-  },
-  chArrow: {
-    fontSize: 16,
-    color: C.fg,
-    fontWeight: "600",
   },
   groupSeparator: {
     width: 1,

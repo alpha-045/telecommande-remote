@@ -11,7 +11,9 @@ import {
   Dimensions,
   Easing,
   FlatList,
+  TextInput,
 } from 'react-native';
+import { useTVConnection } from './context/TVConnectionContext';
 
 const { width: SW, height: SH } = Dimensions.get('window');
 
@@ -30,21 +32,24 @@ const C = {
   blue: '#3b7dff',
 };
 
-const TV_DATA = [
-  { id: '1', name: 'Samsung Smart TV', model: 'UN55CU8000', room: 'Living Room', icon: '📺', signal: 92 },
-  { id: '2', name: 'LG OLED C3', model: 'OLED55C3PUA', room: 'Bedroom', icon: '🖥️', signal: 78 },
-  { id: '3', name: 'Sony Bravia XR', model: 'KD-55X90L', room: 'Office', icon: '📺', signal: 85 },
-  { id: '4', name: 'TCL QLED TV', model: '55QM751G', room: 'Kitchen', icon: '🖥️', signal: 64 },
-];
-
-
 export default function LoadFindTV({ navigation }) {
-  const [phase, setPhase] = useState('loading'); 
+  const {
+    connectionState,
+    errorMessage,
+    scanForTvs,
+    stopScan,
+    connectToTv,
+    submitPin,
+    activeTv,
+  } = useTVConnection();
+
+  const [phase, setPhase] = useState('loading'); // loading | scanning | found | connecting
   const [percent, setPercent] = useState(0);
   const [statusText, setStatusText] = useState('Initializing...');
   const [foundTVs, setFoundTVs] = useState([]);
   const [selectedTV, setSelectedTV] = useState(null);
   const [connectPercent, setConnectPercent] = useState(0);
+  const [pinCode, setPinCode] = useState('');
 
   const progress = useRef(new Animated.Value(0)).current;
   const scanRotate = useRef(new Animated.Value(0)).current;
@@ -72,37 +77,27 @@ export default function LoadFindTV({ navigation }) {
     ).start();
     Animated.timing(textOpacity, { toValue: 1, duration: 600, delay: 300, useNativeDriver: true }).start();
 
-    const statuses = [
-      { at: 0, text: 'Initializing...' },
-      { at: 25, text: 'Activating Bluetooth...' },
-      { at: 50, text: 'Enabling Wi-Fi Direct...' },
-      { at: 75, text: 'Preparing scanner...' },
-      { at: 100, text: 'Ready to scan' },
-    ];
-
     const listener = progress.addListener(({ value }) => {
       setPercent(Math.round(value));
-      for (let i = statuses.length - 1; i >= 0; i--) {
-        if (value >= statuses[i].at) { setStatusText(statuses[i].text); break; }
-      }
+      if (value < 50) setStatusText('Initializing scanner...');
+      else if (value < 90) setStatusText('Preparing network...');
+      else setStatusText('Ready to scan');
     });
 
     Animated.sequence([
-      Animated.timing(progress, { toValue: 30, duration: 700, useNativeDriver: false }),
-      Animated.timing(progress, { toValue: 60, duration: 1000, useNativeDriver: false }),
-      Animated.timing(progress, { toValue: 90, duration: 600, useNativeDriver: false }),
+      Animated.timing(progress, { toValue: 50, duration: 400, useNativeDriver: false }),
       Animated.timing(progress, { toValue: 100, duration: 400, useNativeDriver: false }),
     ]).start(() => {
-      setTimeout(() => setPhase('scanning'), 500);
+      setTimeout(() => setPhase('scanning'), 300);
     });
 
     return () => progress.removeListener(listener);
   }, []);
 
+  // ── Phase 2: Real mDNS Scanning ──
   useEffect(() => {
     if (phase !== 'scanning') return;
 
-    // Animate scan waves
     const makeWaveAnim = (wave, delay) => {
       return Animated.loop(
         Animated.sequence([
@@ -116,70 +111,88 @@ export default function LoadFindTV({ navigation }) {
     const w3 = makeWaveAnim(scanWave3, 1200);
     w1.start(); w2.start(); w3.start();
 
-    setStatusText('Scanning for TVs...');
-    let discovered = [];
-    const delays = [800, 1600, 2600, 3800];
+    setStatusText('Scanning for Xiaomi / Android TVs...');
 
-    delays.forEach((delay, i) => {
-      setTimeout(() => {
-        discovered = [...discovered, TV_DATA[i]];
-        setFoundTVs([...discovered]);
+    const discoveredList = [];
+
+    scanForTvs((tvDevice) => {
+      if (!discoveredList.some((item) => item.id === tvDevice.id)) {
+        discoveredList.push(tvDevice);
+        setFoundTVs([...discoveredList]);
         Vibration?.vibrate(20);
-        setStatusText(`Found ${discovered.length} device${discovered.length > 1 ? 's' : ''}...`);
-      }, delay);
-    });
-
-    setTimeout(() => {
-      setPhase('found');
-      Animated.timing(listOpacity, { toValue: 1, duration: 500, useNativeDriver: true }).start();
-    }, 4800);
-
-    return () => { w1.stop(); w2.stop(); w3.stop(); };
-  }, [phase]);
-
-  useEffect(() => {
-    if (phase !== 'connecting' || !selectedTV) return;
-
-    const statuses = [
-      { at: 0, text: `Connecting to ${selectedTV.name}...` },
-      { at: 30, text: 'Pairing...' },
-      { at: 60, text: 'Syncing remote profile...' },
-      { at: 85, text: 'Almost done...' },
-      { at: 100, text: 'Connected!' },
-    ];
-
-    const listener = connectProgress.addListener(({ value }) => {
-      setConnectPercent(Math.round(value));
-      for (let i = statuses.length - 1; i >= 0; i--) {
-        if (value >= statuses[i].at) { setStatusText(statuses[i].text); break; }
+        setStatusText(`Found ${discoveredList.length} device${discoveredList.length > 1 ? 's' : ''}...`);
       }
     });
 
-    Animated.sequence([
-      Animated.timing(connectProgress, { toValue: 25, duration: 600, useNativeDriver: false }),
-      Animated.timing(connectProgress, { toValue: 55, duration: 900, useNativeDriver: false }),
-      Animated.timing(connectProgress, { toValue: 80, duration: 700, useNativeDriver: false }),
-      Animated.timing(connectProgress, { toValue: 100, duration: 500, useNativeDriver: false }),
-    ]).start(() => {
-      // Show checkmark
-      Animated.spring(checkScale, { toValue: 1, friction: 3, useNativeDriver: true }).start();
-      Vibration?.vibrate([0, 30, 50, 30]);
+    // Auto-transition to list view after 4 seconds of scanning
+    const scanTimer = setTimeout(() => {
+      stopScan();
+      setPhase('found');
+      Animated.timing(listOpacity, { toValue: 1, duration: 500, useNativeDriver: true }).start();
+    }, 4500);
 
-      // Navigate to INTER screen
-      setTimeout(() => {
-        navigation.navigate('INTER', { tv: selectedTV });
-      }, 900);
+    return () => {
+      w1.stop(); w2.stop(); w3.stop();
+      clearTimeout(scanTimer);
+      stopScan();
+    };
+  }, [phase]);
+
+  // ── Connection state transitions ──
+  useEffect(() => {
+    if (phase !== 'connecting' || !selectedTV) return;
+
+    if (connectionState === 'pairing') {
+      setStatusText(`Pairing with ${selectedTV.name}...`);
+      Animated.timing(connectProgress, { toValue: 40, duration: 500, useNativeDriver: false }).start();
+    } else if (connectionState === 'awaiting_pin') {
+      setStatusText('Enter 6-character code from TV');
+      Animated.timing(connectProgress, { toValue: 50, duration: 300, useNativeDriver: false }).start();
+    } else if (connectionState === 'connecting') {
+      setStatusText('Syncing remote session...');
+      Animated.timing(connectProgress, { toValue: 80, duration: 600, useNativeDriver: false }).start();
+    } else if (connectionState === 'connected') {
+      setStatusText('Connected!');
+      Animated.timing(connectProgress, { toValue: 100, duration: 300, useNativeDriver: false }).start(() => {
+        Animated.spring(checkScale, { toValue: 1, friction: 3, useNativeDriver: true }).start();
+        Vibration?.vibrate([0, 30, 50, 30]);
+
+        setTimeout(() => {
+          navigation.navigate('INTER', { tv: selectedTV });
+        }, 800);
+      });
+    } else if (connectionState === 'error') {
+      setStatusText(errorMessage || 'Connection failed');
+    }
+
+    const listener = connectProgress.addListener(({ value }) => {
+      setConnectPercent(Math.round(value));
     });
 
     return () => connectProgress.removeListener(listener);
-  }, [phase]);
+  }, [connectionState, phase, selectedTV]);
 
   // ── Handle TV tap ──
   const handleTVPress = (tv) => {
     Vibration?.vibrate(25);
     setSelectedTV(tv);
     setPhase('connecting');
-    setStatusText(`Connecting to ${tv.name}...`);
+    setPinCode('');
+    connectToTv(tv);
+  };
+
+  const handlePinSubmit = () => {
+    if (!pinCode.trim()) return;
+    Vibration?.vibrate(20);
+    submitPin(pinCode.trim());
+  };
+
+  const handleRetry = () => {
+    if (selectedTV) {
+      connectToTv(selectedTV);
+    } else {
+      setPhase('scanning');
+    }
   };
 
   const scanAngle = scanRotate.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
@@ -221,9 +234,9 @@ export default function LoadFindTV({ navigation }) {
         </View>
       )}
 
+      {/* ── SCANNING PHASE ── */}
       {phase === 'scanning' && (
         <View style={s.centerWrap}>
-          {/* Radar scan visual */}
           <View style={s.radarWrap}>
             <View style={s.radarCircle1} />
             <View style={s.radarCircle2} />
@@ -257,7 +270,7 @@ export default function LoadFindTV({ navigation }) {
             <View style={s.foundPreview}>
               {foundTVs.map((tv) => (
                 <View key={tv.id} style={s.foundDot}>
-                  <Text style={s.foundDotIcon}>{tv.icon}</Text>
+                  <Text style={s.foundDotIcon}>{tv.icon || '📺'}</Text>
                 </View>
               ))}
             </View>
@@ -265,50 +278,116 @@ export default function LoadFindTV({ navigation }) {
         </View>
       )}
 
+      {/* ── FOUND DEVICES PHASE ── */}
       {phase === 'found' && (
         <Animated.View style={[s.foundWrap, { opacity: listOpacity }]}>
           <Text style={s.foundTitle}>Available Devices</Text>
-          <Text style={s.foundSubtitle}>{foundTVs.length} TV{foundTVs.length > 1 ? 's' : ''} found nearby</Text>
+          <Text style={s.foundSubtitle}>
+            {foundTVs.length > 0
+              ? `${foundTVs.length} TV${foundTVs.length > 1 ? 's' : ''} found nearby`
+              : 'No Xiaomi / Android TVs found on local Wi-Fi'}
+          </Text>
 
-          <FlatList
-            data={foundTVs}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={s.tvList}
-            renderItem={({ item, index }) => <TVCard tv={item} index={index} onPress={handleTVPress} />}
-            showsVerticalScrollIndicator={false}
-          />
+          {foundTVs.length > 0 ? (
+            <FlatList
+              data={foundTVs}
+              keyExtractor={(item) => item.id}
+              contentContainerStyle={s.tvList}
+              renderItem={({ item, index }) => <TVCard tv={item} index={index} onPress={handleTVPress} />}
+              showsVerticalScrollIndicator={false}
+            />
+          ) : (
+            <View style={{ alignItems: 'center', gap: 12 }}>
+              <TouchableOpacity style={s.rescanBtn} onPress={() => setPhase('scanning')}>
+                <Text style={s.rescanBtnText}>Scan Again</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={{ marginTop: 20, alignSelf: 'center' }}
+            onPress={() => {
+              const manualDevice = {
+                id: '192.168.1.100:6467',
+                name: 'Xiaomi TV (Manual IP)',
+                model: 'Mi TV / Android TV',
+                room: 'Wi-Fi Network',
+                icon: '📺',
+                signal: 100,
+                host: '192.168.1.100',
+                port: 6467,
+                protocolVersion: 2,
+              };
+              setSelectedTV(manualDevice);
+              setPhase('connecting');
+              connectToTv(manualDevice);
+            }}
+          >
+            <Text style={{ color: C.accent, fontSize: 13, fontWeight: '700' }}>
+              + Connect by IP Address
+            </Text>
+          </TouchableOpacity>
         </Animated.View>
       )}
 
+      {/* ── CONNECTING / PAIRING PHASE ── */}
       {phase === 'connecting' && selectedTV && (
         <View style={s.centerWrap}>
           <View style={s.connectTvIcon}>
-            <Text style={s.connectTvEmoji}>{selectedTV.icon}</Text>
+            <Text style={s.connectTvEmoji}>{selectedTV.icon || '📺'}</Text>
           </View>
 
           <Text style={s.connectName}>{selectedTV.name}</Text>
-          <Text style={s.connectRoom}>{selectedTV.room}</Text>
+          <Text style={s.connectRoom}>{selectedTV.room || selectedTV.host}</Text>
 
-          <View style={s.connectTrack}>
-            <Animated.View style={[s.connectFill, { width: `${connectPercent}%` }]} />
-          </View>
-          <Text style={s.connectPercent}>{connectPercent}%</Text>
-
-          <Text style={s.connectStatus}>{statusText}</Text>
-
-          {/* Dots animation */}
-          <View style={s.dotsRow}>
-            {[0, 1, 2].map((i) => (
-              <AnimatedDot key={i} delay={i * 300} />
-            ))}
-          </View>
-
-          {connectPercent === 100 && (
-            <Animated.View style={[s.checkWrap, { transform: [{ scale: checkScale }] }]}>
-              <View style={s.checkCircle}>
-                <Text style={s.checkIcon}>✓</Text>
+          {/* PIN Entry Prompt */}
+          {connectionState === 'awaiting_pin' ? (
+            <View style={s.pinContainer}>
+              <Text style={s.pinTitle}>Enter Code Shown on TV</Text>
+              <TextInput
+                style={s.pinInput}
+                value={pinCode}
+                onChangeText={setPinCode}
+                placeholder="6-Digit PIN"
+                placeholderTextColor={C.muted}
+                maxLength={6}
+                autoCapitalize="characters"
+                keyboardType="default"
+              />
+              <TouchableOpacity style={s.pinSubmitBtn} onPress={handlePinSubmit}>
+                <Text style={s.pinSubmitText}>Pair TV</Text>
+              </TouchableOpacity>
+            </View>
+          ) : connectionState === 'error' ? (
+            <View style={s.errorContainer}>
+              <Text style={s.errorText}>{errorMessage || 'Failed to connect'}</Text>
+              <TouchableOpacity style={s.rescanBtn} onPress={handleRetry}>
+                <Text style={s.rescanBtnText}>Try Again</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <View style={s.connectTrack}>
+                <Animated.View style={[s.connectFill, { width: `${connectPercent}%` }]} />
               </View>
-            </Animated.View>
+              <Text style={s.connectPercent}>{connectPercent}%</Text>
+              <Text style={s.connectStatus}>{statusText}</Text>
+
+              {/* Dots animation */}
+              <View style={s.dotsRow}>
+                {[0, 1, 2].map((i) => (
+                  <AnimatedDot key={i} delay={i * 300} />
+                ))}
+              </View>
+
+              {connectPercent === 100 && (
+                <Animated.View style={[s.checkWrap, { transform: [{ scale: checkScale }] }]}>
+                  <View style={s.checkCircle}>
+                    <Text style={s.checkIcon}>✓</Text>
+                  </View>
+                </Animated.View>
+              )}
+            </>
           )}
         </View>
       )}
@@ -328,7 +407,7 @@ function TVCard({ tv, index, onPress }) {
     ]).start();
   }, []);
 
-  const signalColor = tv.signal > 80 ? C.accent : tv.signal > 60 ? C.warning : C.danger;
+  const signalColor = (tv.signal || 90) > 80 ? C.accent : (tv.signal || 90) > 60 ? C.warning : C.danger;
 
   return (
     <Animated.View style={{ opacity: cardOpacity, transform: [{ translateY: cardY }] }}>
@@ -339,36 +418,32 @@ function TVCard({ tv, index, onPress }) {
         onPress={() => onPress(tv)}
         style={[s.tvCard, pressed && s.tvCardPressed]}
       >
-        {/* TV icon + info */}
         <View style={s.tvCardLeft}>
           <View style={s.tvCardIconWrap}>
-            <Text style={s.tvCardIcon}>{tv.icon}</Text>
+            <Text style={s.tvCardIcon}>{tv.icon || '📺'}</Text>
           </View>
           <View style={s.tvCardInfo}>
             <Text style={s.tvCardName}>{tv.name}</Text>
-            <Text style={s.tvCardModel}>{tv.model}</Text>
+            <Text style={s.tvCardModel}>{tv.model || tv.host}</Text>
           </View>
         </View>
 
-        {/* Room + Signal */}
         <View style={s.tvCardRight}>
           <Text style={s.tvCardRoom}>{tv.room}</Text>
           <View style={s.signalRow}>
             <View style={s.signalTrack}>
-              <View style={[s.signalFill, { width: `${tv.signal}%`, backgroundColor: signalColor }]} />
+              <View style={[s.signalFill, { width: `${tv.signal || 90}%`, backgroundColor: signalColor }]} />
             </View>
-            <Text style={[s.signalVal, { color: signalColor }]}>{tv.signal}%</Text>
+            <Text style={[s.signalVal, { color: signalColor }]}>{tv.signal || 90}%</Text>
           </View>
         </View>
 
-        {/* Arrow */}
         <Text style={s.tvCardArrow}>›</Text>
       </TouchableOpacity>
     </Animated.View>
   );
 }
 
-// ─── Animated Dot ───
 function AnimatedDot({ delay }) {
   const opacity = useRef(new Animated.Value(0.2)).current;
 
@@ -394,7 +469,6 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
 
-  // Background blobs
   blob1: {
     position: 'absolute',
     width: 280,
@@ -416,14 +490,12 @@ const s = StyleSheet.create({
     right: -60,
   },
 
-  // Center wrapper
   centerWrap: {
     alignItems: 'center',
     justifyContent: 'center',
     width: '100%',
   },
 
-  // ── Loading Phase ──
   tvWrap: {
     width: 140,
     height: 140,
@@ -462,7 +534,6 @@ const s = StyleSheet.create({
     backgroundColor: C.accentGlow,
   },
 
-  // TV icon
   tvIconBody: {
     alignItems: 'center',
   },
@@ -496,7 +567,6 @@ const s = StyleSheet.create({
     backgroundColor: C.border,
   },
 
-  // Status text
   statusText: {
     fontSize: 14,
     fontWeight: '600',
@@ -505,7 +575,6 @@ const s = StyleSheet.create({
     marginBottom: 20,
   },
 
-  // Progress bar
   progressTrack: {
     width: SW * 0.6,
     height: 4,
@@ -530,7 +599,6 @@ const s = StyleSheet.create({
     fontFamily: 'monospace',
   },
 
-  // ── Scanning Phase ──
   radarWrap: {
     width: 180,
     height: 180,
@@ -601,7 +669,6 @@ const s = StyleSheet.create({
     fontSize: 20,
   },
 
-  // ── Found Phase ──
   foundWrap: {
     width: '100%',
     paddingHorizontal: 20,
@@ -626,7 +693,6 @@ const s = StyleSheet.create({
     paddingBottom: 40,
   },
 
-  // TV Card
   tvCard: {
     backgroundColor: C.cardLight,
     borderRadius: 16,
@@ -712,7 +778,6 @@ const s = StyleSheet.create({
     marginLeft: 4,
   },
 
-  // ── Connecting Phase ──
   connectTvIcon: {
     width: 80,
     height: 80,
@@ -774,7 +839,6 @@ const s = StyleSheet.create({
     marginBottom: 20,
   },
 
-  // Animated dots
   dotsRow: {
     flexDirection: 'row',
     gap: 10,
@@ -787,7 +851,6 @@ const s = StyleSheet.create({
     backgroundColor: C.accent,
   },
 
-  // Checkmark
   checkWrap: {
     position: 'absolute',
     bottom: -10,
@@ -808,5 +871,72 @@ const s = StyleSheet.create({
     fontSize: 28,
     fontWeight: '900',
     color: C.bg,
+  },
+
+  // PIN Entry Styles
+  pinContainer: {
+    alignItems: 'center',
+    width: '80%',
+    marginVertical: 15,
+  },
+  pinTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: C.fg,
+    marginBottom: 12,
+    letterSpacing: 1,
+  },
+  pinInput: {
+    width: '100%',
+    height: 50,
+    backgroundColor: C.cardLight,
+    borderColor: C.accent,
+    borderWidth: 1.5,
+    borderRadius: 12,
+    color: C.accent,
+    fontSize: 20,
+    fontWeight: '700',
+    textAlign: 'center',
+    letterSpacing: 4,
+    marginBottom: 16,
+  },
+  pinSubmitBtn: {
+    width: '100%',
+    height: 46,
+    backgroundColor: C.accent,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pinSubmitText: {
+    color: C.bg,
+    fontWeight: '800',
+    fontSize: 14,
+    letterSpacing: 1,
+  },
+
+  // Error / Rescan
+  errorContainer: {
+    alignItems: 'center',
+    marginVertical: 15,
+  },
+  errorText: {
+    color: C.danger,
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 16,
+  },
+  rescanBtn: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: C.cardLight,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
+  },
+  rescanBtnText: {
+    color: C.fg,
+    fontWeight: '700',
+    fontSize: 13,
   },
 });
