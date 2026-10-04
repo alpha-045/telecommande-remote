@@ -1,10 +1,19 @@
 import TcpSocket from 'react-native-tcp-socket';
+import { NativeModules } from 'react-native';
 import forge from 'node-forge';
 import { Buffer } from 'buffer';
 import { getOrCreateClientCertificate } from './androidTvCert';
 import { PairingMessage, packFramedMessage, decodeVarint } from './protoSchemas';
 
 export async function pairWithTv(ip, port = 6467, onPinRequired) {
+  if (!NativeModules.TcpSockets) {
+    const err = new Error(
+      'Native TCP Socket module is missing in Expo Go. Please run a Development Build using "npx expo run:android" to connect to real TVs.'
+    );
+    err.code = 'EXPO_GO_UNSUPPORTED';
+    throw err;
+  }
+
   const clientCert = await getOrCreateClientCertificate();
 
   return new Promise((resolve, reject) => {

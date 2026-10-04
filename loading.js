@@ -12,6 +12,7 @@ import {
   Easing,
   FlatList,
   TextInput,
+  NativeModules,
 } from 'react-native';
 import { useTVConnection } from './context/TVConnectionContext';
 
@@ -42,6 +43,8 @@ export default function LoadFindTV({ navigation }) {
     submitPin,
     activeTv,
   } = useTVConnection();
+
+  const isExpoGo = !NativeModules.RNZeroconf || !NativeModules.TcpSockets;
 
   const [phase, setPhase] = useState('loading'); // loading | scanning | found | connecting
   const [percent, setPercent] = useState(0);
@@ -287,6 +290,16 @@ export default function LoadFindTV({ navigation }) {
               ? `${foundTVs.length} TV${foundTVs.length > 1 ? 's' : ''} found nearby`
               : 'No Xiaomi / Android TVs found on local Wi-Fi'}
           </Text>
+
+          {isExpoGo && (
+            <View style={s.expoWarningBox}>
+              <Text style={s.expoWarningTitle}>⚠️ Running in Expo Go</Text>
+              <Text style={s.expoWarningText}>
+                Expo Go lacks native mDNS discovery & TLS sockets. To discover and pair real Xiaomi / Android TVs on your Wi-Fi, run a Development Build using:
+              </Text>
+              <Text style={s.expoCommandText}>npx expo run:android</Text>
+            </View>
+          )}
 
           {foundTVs.length > 0 ? (
             <FlatList
@@ -938,5 +951,38 @@ const s = StyleSheet.create({
     color: C.fg,
     fontWeight: '700',
     fontSize: 13,
+  },
+
+  // Expo Go Warning Box
+  expoWarningBox: {
+    backgroundColor: '#1f1b2e',
+    borderColor: C.warning,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+  },
+  expoWarningTitle: {
+    color: C.warning,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  expoWarningText: {
+    color: C.fg,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 8,
+  },
+  expoCommandText: {
+    color: C.accent,
+    backgroundColor: C.bg,
+    fontSize: 13,
+    fontWeight: '700',
+    fontFamily: 'monospace',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    alignSelf: 'flex-start',
   },
 });

@@ -1,4 +1,5 @@
 import TcpSocket from 'react-native-tcp-socket';
+import { NativeModules } from 'react-native';
 import { Buffer } from 'buffer';
 import { getOrCreateClientCertificate } from './androidTvCert';
 import { RemoteMessage, packFramedMessage, decodeVarint } from './protoSchemas';
@@ -17,6 +18,12 @@ class AndroidTvRemoteService {
     this.activeTv = tv;
     const ip = tv.host || tv.ip;
     const port = tv.remotePort || 6466;
+
+    if (!NativeModules.TcpSockets) {
+      throw new Error(
+        'Native TCP Socket module is missing in Expo Go. Please run a Development Build using "npx expo run:android" to connect to real TVs.'
+      );
+    }
 
     const clientCert = await getOrCreateClientCertificate();
 
